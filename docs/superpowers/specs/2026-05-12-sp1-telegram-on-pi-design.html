@@ -264,10 +264,14 @@
 
 | Question | Why deferred |
 |---|---|
-| **Assistant persona** — what does the system prompt actually *say*? | New top open question (§11). Needs to be drafted with test interactions before implementation; this is the single most impactful piece still unwritten. |
+| Bootstrap meta-prompt wording | §5.4 has a draft; tune during implementation against real outputs. Shape locked, instructions open. |
 | OAuth-vs-API-key UX in `install.sh` | Defer to "docs only" for SP1; revisit if friction surfaces. |
 | Telegram steer acknowledgement — also send 👍 reaction? | Defer until manual testing shows the text-only ack is insufficient. |
 | Final project name | `paddelino` is the working name; revisit post-SP1. |
+
+### Latest resolution: assistant persona (2026-05-13)
+
+Resolved via the **first-run persona bootstrap flow** (§5.4). The user describes the assistant in 1–2 sentences via Telegram; a hardcoded meta-prompt template runs a one-shot pi-ai completion to generate the polished system prompt. Stored at `~/.paddelino/identity/system-prompt.md`. `/persona` re-runs the flow. SP5 will make the meta-prompt itself skill-installable.
 
 </div>
 
@@ -463,7 +467,7 @@ All sources under `src/` so `bun build --compile src/index.ts --outfile dist/pad
 | Module | Responsibility |
 |---|---|
 | `config.ts` | Parse env + optional `.env` files (process env → `~/.paddelino/.env` → cwd `.env`, later wins). Validate required vars. Expose typed `Config`. Fail fast at startup with readable errors. |
-| `agent/identity.ts` | `getSystemPrompt()`, `getTools()`. SP1 returns hardcoded values. The seam where SP5's skill registry plugs in. |
+| `agent/identity.ts` | `getSystemPrompt()` reads `~/.paddelino/identity/system-prompt.md` (bootstrapped on first run — see §5.4). `getTools()` returns the SP1 hardcoded tool list. `bootstrapPersona(userInput, model) → string` runs a one-shot pi-ai completion with a hardcoded meta-prompt template that turns a 1–2 sentence persona description into a polished system prompt. The seam where SP5's skill registry plugs in. |
 | `agent/factory.ts` | `createAgent(userId, config, loadedMessages) → pi.Agent`. Builds the Agent with identity, configured model, configured thinking level, `beforeToolCall` stub, `afterToolCall` audit, and pre-populated messages from disk. |
 | `agent/manager.ts` | `AgentManager` singleton. `getAgent(userId): Promise<Agent>`. Holds Agents for process lifetime (no eviction in SP1 — household scale makes RAM cost trivial). Subscribes to `agent_end` to persist Context. |
 | `agent/persistence.ts` | `load(userId)`/`save(userId, context)`. Atomic write (tmp file in same dir → fsync → rename). Robust to crashes. Handles corrupted JSON by archiving and starting fresh with a user-facing warning. |
@@ -482,7 +486,51 @@ All sources under `src/` so `bun build --compile src/index.ts --outfile dist/pad
 | `shared/audit.ts` | `audit(eventKind, userId, details)` appends one JSON line to `~/.paddelino/audit.log`. |
 | `shared/lock.ts` | PID lock file at `~/.paddelino/.lock`. Reclaims if stale (PID not running). Ported from current bot's `process-lock.ts`. |
 
-### 5.4 Key types (sketch)
+### 5.4 First-run persona bootstrap
+
+paddelino is built around one shared assistant identity per household (§4.1). Rather than ship with a hardcoded persona or force the user to write their own system prompt, **the user describes the assistant in 1–2 sentences and a meta-prompt generates the polished system prompt**.
+
+**Trigger.** On startup, `agent/identity.ts` checks whether `~/.paddelino/identity/system-prompt.md` exists. If not, the bot enters bootstrap mode: the first message from any allowlisted user is intercepted, regardless of content.
+
+**Bootstrap dialog (Telegram):**
+
+1. Bot: `"Hi! Before we start, describe what kind of assistant you'd like me to be — 1–2 sentences. Tone, focus, anything important. (e.g. 'A friendly home assistant focused on cooking and reminders. Casual tone, brief replies.')"`
+2. User replies with a free-form description.
+3. Bot runs `bootstrapPersona(userInput, defaultModel)`: a one-shot pi-ai completion using a hardcoded meta-prompt:
+
+   ```
+   You are a prompt engineer. Write a complete, polished system prompt for a household assistant that will run as a Telegram bot.
+
+   The user has described the assistant they want as:
+   "{USER_INPUT}"
+
+   The prompt you write MUST:
+   - Establish the persona (tone, perspective, optional name).
+   - Define scope and boundaries (what to help with; what to politely decline).
+   - Set style guidelines (verbosity, formality, response length).
+   - Note that responses appear in Telegram — keep markdown simple (no tables, no complex nesting).
+   - Avoid hardcoding the date or other time-sensitive facts (the assistant is told the current date separately).
+
+   Output ONLY the system prompt itself, with no preamble, no explanation, and no surrounding quotes.
+   ```
+
+4. The generated text is written to `~/.paddelino/identity/system-prompt.md`. The raw user input is written to `~/.paddelino/identity/persona-input.md` for reference and re-generation.
+5. Bot replies: `"Got it. Here's the persona I'll use:\n\n<generated prompt>\n\nIf you'd like to change it, run /persona. Otherwise — how can I help?"`
+6. The user's original first message is **not** forwarded to the LLM as a prompt; bootstrap consumes it. The next message starts normal interaction.
+
+**Re-generation (`/persona`).** Re-runs the bootstrap flow against all allowlisted users:
+
+- `/persona` (no args) → bot asks for a new description.
+- `/persona <description>` → bot uses the inline description directly.
+- After regeneration, all per-user pi `Agent` instances are evicted from `AgentManager` so they re-create with the new system prompt on the next message. (Existing message history per user is preserved.)
+
+**Failure handling.**
+- If the bootstrap LLM call fails (provider error, timeout): bot replies `"Couldn't generate the persona right now — try again, or set ~/.paddelino/identity/system-prompt.md by hand."` Bootstrap state remains; next message retries.
+- If `system-prompt.md` is empty or unreadable at startup: bootstrap mode kicks in as if it didn't exist.
+
+**Bootstrap meta-prompt rationale.** The meta-prompt approach means the user doesn't need to know prompt-engineering. Their description ("friendly home assistant, cooking and reminders, brief replies") becomes a structured prompt with persona, scope, style, and channel guidance baked in. SP5 will make the meta-prompt itself skill-installable.
+
+### 5.5 Key types (sketch)
 
 ```ts
 // agent/inputs/types.ts
@@ -591,6 +639,7 @@ agent.prompt(userMessage)
 
 | Telegram input | SP1 |
 |---|---|
+| Any message when no persona file exists | First-run bootstrap (§5.4). Bot asks for a 1–2 sentence description, runs `bootstrapPersona()`, stores the result, then resumes normal interaction on the next message. |
 | Text | Goes through `text` processor (above). |
 | Photo / media group | `photo` processor: downloads, base64-encodes, builds a user message with text + image content blocks (`ImageContent` from `@earendil-works/pi-ai`). Pi handles vision-capable models transparently. |
 | Text/photo arriving while `state.isStreaming` | Call `agent.steer(userMessage)`. Reply: `"Added — will fold into the current reply."` Pi injects after the current assistant turn finishes (`steeringMode: "one-at-a-time"`). |
@@ -607,6 +656,8 @@ agent.prompt(userMessage)
 | `/status` | Reports model, provider, message count, last activity, `state.isStreaming`. |
 | `/model` (no args) | Lists currently configured provider's models via `getModels(provider)`. |
 | `/model <provider> <id>` | Calls `getModel(provider, id)`; on success sets `agent.state.model`. On miss, runs Levenshtein over `getModels(provider)` and replies `"Unknown model 'X'. Did you mean 'Y'?"`. |
+| `/persona` (no args) | Re-enters the bootstrap flow: bot asks for a new 1–2 sentence description; the next user message becomes the new persona input (see §5.4). |
+| `/persona <description>` | Skips the dialog. Runs `bootstrapPersona(description, model)` directly, overwrites `system-prompt.md`, evicts all per-user `Agent`s so the next prompt picks up the new persona. |
 
 ## 7. Persistence
 
@@ -617,6 +668,9 @@ agent.prompt(userMessage)
 ├── config.toml                       # reserved (deferred — env is enough for SP1)
 ├── audit.log                         # append-only, JSON-per-line
 ├── .lock                             # PID lock
+├── identity/                         # shared assistant persona (§5.4)
+│   ├── system-prompt.md              # the generated system prompt (bootstrapped on first run)
+│   └── persona-input.md              # the raw 1–2 sentence user input that generated it
 ├── users/
 │   └── <userId>/
 │       ├── conversations/
@@ -786,11 +840,12 @@ The current `claude-telegram-bot` repo continues to run unchanged during SP1 dev
 
 ## 11. Open questions
 
-1. **Assistant persona — what does the system prompt actually *say*?** SP1's `identity.ts` returns one hardcoded `getSystemPrompt()`, but the spec doesn't define the tone, scope, refusal style, time/identity references, or boundaries. Needs to be drafted (and ideally test-driven against expected interactions) before SP1 implementation.
-2. **Name.** `paddelino` is the working name. Re-open after SP1 ships if a better name emerges. No npm/PyPI collision known.
-3. **OAuth-vs-API-key UX.** pi-ai supports OAuth for Anthropic and ChatGPT. Should `install.sh` guide users through the OAuth flow if no API keys are present, or just point at docs? Lean towards "docs only" for SP1.
-4. **Telegram steer acknowledgement.** Decision committed to text reply (`"Added — will fold into the current reply."`) plus standard streaming. Open: should we also send a Telegram reaction (👍) on the steered message for stronger feedback? Defer until manual testing surfaces a real need.
+1. **Name.** `paddelino` is the working name. Re-open after SP1 ships if a better name emerges. No npm/PyPI collision known.
+2. **OAuth-vs-API-key UX.** pi-ai supports OAuth for Anthropic and ChatGPT. Should `install.sh` guide users through the OAuth flow if no API keys are present, or just point at docs? Lean towards "docs only" for SP1.
+3. **Telegram steer acknowledgement.** Decision committed to text reply (`"Added — will fold into the current reply."`) plus standard streaming. Open: should we also send a Telegram reaction (👍) on the steered message for stronger feedback? Defer until manual testing surfaces a real need.
+4. **Bootstrap meta-prompt wording.** §5.4 has a draft; will be tuned once we see real outputs during implementation. The shape is locked; the exact instructions are open.
 5. **Resolved (kept for historical reference):**
+    - Assistant persona — resolved via the first-run bootstrap flow (§5.4): the user describes the assistant in 1–2 sentences and a hardcoded meta-prompt generates the polished system prompt, stored at `~/.paddelino/identity/system-prompt.md`.
     - Default model — resolved via the provider-aware table in §9.
     - `/model` validation — resolved (Levenshtein did-you-mean).
     - Polite-stub copy — resolved in §6 variations table.
@@ -799,6 +854,8 @@ The current `claude-telegram-bot` repo continues to run unchanged during SP1 dev
 ## 12. Acceptance criteria for SP1
 
 - [ ] `install.sh` on a fresh **Ubuntu 22.04 or 24.04** box installs `paddelino` and runs it after setting `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS`, and one provider key (or completing one OAuth flow). Other systemd-based Linux distros (Debian 12+, Fedora 40+) are expected to work but are not part of SP1 acceptance.
+- [ ] First message after install triggers the persona bootstrap dialog. After the user replies with a 1–2 sentence description, `~/.paddelino/identity/system-prompt.md` is created with a generated system prompt and shown back to the user.
+- [ ] `/persona <new description>` overwrites the system prompt; subsequent replies reflect the new persona.
 - [ ] An allowlisted user sending a text message receives a streaming response.
 - [ ] An allowlisted user sending a photo (with optional caption) receives a vision-aware response when the configured model supports vision.
 - [ ] Conversation continuity survives `paddelino` restart (last conversation continues on the next message).
