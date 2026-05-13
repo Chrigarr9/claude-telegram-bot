@@ -1,3 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SP1 — Telegram-on-pi Design (paddelino)</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/styles/github.min.css" />
+<style>
+  :root {
+    --fg: #1f2328;
+    --fg-muted: #57606a;
+    --bg: #ffffff;
+    --bg-alt: #f6f8fa;
+    --border: #d0d7de;
+    --accent: #0969da;
+    --accent-soft: #ddf4ff;
+    --table-stripe: #f6f8fa;
+    --max-content: 880px;
+    --toc-width: 280px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+      "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
+    font-size: 16px;
+    line-height: 1.55;
+  }
+  .layout {
+    display: grid;
+    grid-template-columns: var(--toc-width) 1fr;
+    gap: 0;
+    min-height: 100vh;
+  }
+  aside.toc {
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+    padding: 28px 18px 28px 24px;
+    border-right: 1px solid var(--border);
+    background: var(--bg-alt);
+    font-size: 13.5px;
+    line-height: 1.45;
+  }
+  aside.toc h2 {
+    margin: 0 0 12px;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--fg-muted);
+    border-bottom: none;
+    padding: 0;
+  }
+  aside.toc ol { list-style: none; padding: 0; margin: 0; }
+  aside.toc ol ol { padding-left: 14px; margin-top: 4px; }
+  aside.toc li { margin: 3px 0; }
+  aside.toc a {
+    color: var(--fg);
+    text-decoration: none;
+    display: block;
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+  aside.toc a:hover { background: var(--accent-soft); color: var(--accent); }
+  aside.toc a.h3 { color: var(--fg-muted); font-size: 12.5px; }
+
+  main {
+    padding: 40px 56px 80px;
+    max-width: var(--max-content);
+    margin: 0 auto;
+    width: 100%;
+  }
+  main h1 { font-size: 30px; margin: 0 0 8px; line-height: 1.25; }
+  main h2 {
+    font-size: 22px;
+    margin: 36px 0 14px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  main h3 { font-size: 18px; margin: 26px 0 10px; }
+  main h4 { font-size: 15px; margin: 18px 0 8px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  main p { margin: 10px 0; }
+  main ul, main ol { padding-left: 22px; }
+  main li { margin: 4px 0; }
+  main blockquote {
+    margin: 14px 0;
+    padding: 6px 14px;
+    color: var(--fg-muted);
+    border-left: 3px solid var(--border);
+    background: var(--bg-alt);
+  }
+  main a { color: var(--accent); text-decoration: none; }
+  main a:hover { text-decoration: underline; }
+  main code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    background: var(--bg-alt);
+    padding: 1.5px 5px;
+    border-radius: 4px;
+    font-size: 0.88em;
+  }
+  main pre {
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    line-height: 1.45;
+    font-size: 13.5px;
+  }
+  main pre code {
+    background: none;
+    padding: 0;
+    border-radius: 0;
+    font-size: inherit;
+  }
+  main table {
+    border-collapse: collapse;
+    margin: 14px 0;
+    width: 100%;
+    font-size: 14.5px;
+    display: block;
+    overflow-x: auto;
+  }
+  main thead { background: var(--bg-alt); }
+  main th, main td {
+    border: 1px solid var(--border);
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  main tbody tr:nth-child(2n) { background: var(--table-stripe); }
+  main th { font-weight: 600; }
+  main hr { border: none; border-top: 1px solid var(--border); margin: 30px 0; }
+
+  .review-section {
+    background: #e7f5ec;
+    border-left: 4px solid #2da44e;
+    padding: 4px 24px 18px;
+    margin: 28px 0;
+    border-radius: 0 6px 6px 0;
+  }
+  .review-section > h2:first-of-type { margin-top: 14px; border-bottom-color: #97d4ad; }
+  .review-section h3 { color: #1f6f3a; }
+  .review-section blockquote {
+    background: #d3ecdc;
+    border-left-color: #2da44e;
+    font-style: italic;
+    color: #1f3d2b;
+  }
+
+  .anchor {
+    opacity: 0;
+    margin-left: 6px;
+    text-decoration: none;
+    color: var(--accent);
+    font-weight: normal;
+  }
+  h1:hover .anchor, h2:hover .anchor, h3:hover .anchor, h4:hover .anchor { opacity: 1; }
+
+  .topbar {
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 24px;
+    font-size: 13px;
+    color: var(--fg-muted);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .topbar a { color: var(--fg-muted); text-decoration: none; }
+  .topbar a:hover { color: var(--accent); }
+
+  #toTop {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    background: var(--accent);
+    color: #fff;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    border: none;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    cursor: pointer;
+    font-size: 18px;
+    display: none;
+  }
+  #toTop:hover { background: #0860c4; }
+
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; }
+    aside.toc { position: relative; height: auto; border-right: none; border-bottom: 1px solid var(--border); }
+    main { padding: 24px 18px 60px; }
+  }
+  @media print {
+    aside.toc, .topbar, #toTop { display: none; }
+    main { padding: 0; max-width: none; }
+    main pre, main code { font-size: 11px; }
+    main h2 { page-break-before: auto; }
+  }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <span>SP1 — Telegram-on-pi Design (paddelino) · <strong>Draft v2</strong> · rev 2026-05-13</span>
+  <span><a href="2026-05-12-sp1-telegram-on-pi-design.md">source .md</a></span>
+</div>
+<div class="layout">
+  <aside class="toc">
+    <h2>Contents</h2>
+    <ol id="toc-list"></ol>
+  </aside>
+  <main id="content"></main>
+</div>
+<button id="toTop" title="Back to top">&uarr;</button>
+
+<script id="md-source" type="text/markdown">
 # SP1 — Telegram-on-pi Design
 
 | | |
@@ -8,6 +226,50 @@
 | **Author** | Chrigarr (with Claude in brainstorming mode) |
 | **Supersedes** | n/a |
 | **Related** | [`docs/phase2-agent-comparison.md`](../../phase2-agent-comparison.md); pi-research clone at `/mnt/Shared/Code/projects/pi` |
+
+<div class="review-section">
+
+## Review notes — resolutions (2026-05-13)
+
+> Original review on 2026-05-13 flagged 7 gaps + 5 minor items + open questions. **All resolved.** This block records the resolution for traceability; the spec body now incorporates every decision.
+
+### Verified against pi source code
+
+| Original concern | Verification |
+|---|---|
+| `agent.continue()` / `agent.abort()` assumed | Both exist on pi's `Agent` class (`packages/agent/src/agent.ts`). |
+| Photo content shape unverified | `{ type: "image", data: string, mimeType: string }` is a verbatim match for pi-ai's `ImageContent` interface (`packages/ai/src/types.ts:240`). |
+| Concurrency policy missing | pi has native `steer()` and `followUp()` queues with `QueueMode = "all" | "one-at-a-time"`. `prompt()` rejects re-entry. We adopt `steer()` with default mode. |
+
+### Decisions baked into the spec
+
+| Item | Decision | Lives in |
+|---|---|---|
+| Project name | `paddelino` | renamed throughout |
+| Concurrent inbound while streaming | `agent.steer(msg)`; reply `"Added — will fold into the current reply."` | §5.3, §6, §8 |
+| AgentManager eviction | **None** in SP1 (household scale) | §5.3 |
+| `/model` validation | `getModel()` at command time + Levenshtein did-you-mean over `getModels(provider)` | §6 variations |
+| Default model | Provider-aware table (haiku-4-5 / gpt-5-mini / deepseek-chat-v3 / gemini-2.5-flash); `PADDELINO_PROVIDER_PRIORITY` env | §9 Configuration |
+| Provider auth | API keys **or** pi-ai OAuth (Anthropic, ChatGPT) | §9 Configuration |
+| `thinkingLevel` provider compatibility | Six values; silently ignored by non-thinking providers | §9 Configuration |
+| Polite-stub copy | Per-input-type, plain text (no emojis) | §6 variations |
+| All user-facing replies | Plain text — no emojis | §6, §8 |
+| Persistence-error wording | New text, no emoji | §8 |
+| NFS atomic-rename caveat | One sentence in save semantics | §7 |
+| Envelope migration on pi upgrade | Archive `default.json.incompatible-<ts>`; start fresh | §7 |
+| Cost-limit trust boundary | Explicit non-goal: allowlist is the trust boundary | §3 |
+| "Any Linux" vs Ubuntu scope | §9 broader; §12 tightened to Ubuntu 22.04/24.04 with other distros expected-not-guaranteed | §9, §12 |
+
+### Still-open questions
+
+| Question | Why deferred |
+|---|---|
+| **Assistant persona** — what does the system prompt actually *say*? | New top open question (§11). Needs to be drafted with test interactions before implementation; this is the single most impactful piece still unwritten. |
+| OAuth-vs-API-key UX in `install.sh` | Defer to "docs only" for SP1; revisit if friction surfaces. |
+| Telegram steer acknowledgement — also send 👍 reaction? | Defer until manual testing shows the text-only ack is insufficient. |
+| Final project name | `paddelino` is the working name; revisit post-SP1. |
+
+</div>
 
 ## 1. Context
 
@@ -560,3 +822,62 @@ The current `claude-telegram-bot` repo continues to run unchanged during SP1 dev
 - **Router** — picks `{ identityName, model, tools, thinkingLevel }` for a given input. Trivial defaults in SP1; skill-installable rules in SP5.
 - **Skill** — a unit of capability the assistant can use. SP5 concept. Skills can register tools, input processors, routing rules, and identities.
 - **Sub-agent** — a delegated task-specific `Agent` spawned by the main assistant for a specific job (e.g. designing a display screen). SP5 concept.
+- **steer / steeringQueue** — pi-agent-core APIs to inject a message into the current run after the assistant turn ends. Used in SP1 for concurrent inbound messages while `state.isStreaming` is true.
+- **followUp / followUpQueue** — pi-agent-core APIs to queue a message for after the current run *fully* completes. Not used in SP1; reserved for SP5 scheduled tasks.
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/core.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/languages/typescript.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/languages/javascript.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/languages/json.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/languages/bash.min.js"></script>
+<script>
+  marked.setOptions({ gfm: true, breaks: false, headerIds: true, mangle: false });
+  const md = document.getElementById('md-source').textContent;
+  const rawHtml = marked.parse(md);
+  const cleanHtml = DOMPurify.sanitize(rawHtml);
+  const main = document.getElementById('content');
+  main.innerHTML = cleanHtml;
+
+  document.querySelectorAll('pre code').forEach(block => {
+    try { hljs.highlightElement(block); } catch (e) { /* ignore */ }
+  });
+
+  const toc = document.getElementById('toc-list');
+  const headers = main.querySelectorAll('h2, h3');
+  headers.forEach(h => {
+    const text = h.textContent;
+    const id = text.toLowerCase().replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/^-+|-+$/g, '');
+    h.id = id;
+    const anchor = document.createElement('a');
+    anchor.href = '#' + id;
+    anchor.className = 'anchor';
+    anchor.textContent = '#';
+    h.appendChild(anchor);
+    const li = document.createElement('li');
+    const a = document.createElement('a');
+    a.href = '#' + id;
+    a.textContent = text;
+    if (h.tagName === 'H3') a.className = 'h3';
+    li.appendChild(a);
+    if (h.tagName === 'H2') {
+      toc.appendChild(li);
+    } else {
+      let lastTopLi = toc.lastElementChild;
+      if (!lastTopLi) { toc.appendChild(li); return; }
+      let sublist = lastTopLi.querySelector('ol');
+      if (!sublist) { sublist = document.createElement('ol'); lastTopLi.appendChild(sublist); }
+      sublist.appendChild(li);
+    }
+  });
+
+  const toTop = document.getElementById('toTop');
+  window.addEventListener('scroll', () => {
+    toTop.style.display = window.scrollY > 400 ? 'block' : 'none';
+  });
+  toTop.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
+</script>
+</body>
+</html>
