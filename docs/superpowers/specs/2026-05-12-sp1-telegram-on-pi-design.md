@@ -31,6 +31,37 @@ The full vision decomposes into five sub-projects. **This document specifies SP1
 
 Coding-via-Claude-Code becomes one possible skill in SP5; it is **not** an SP1 deliverable. pi handles coding tasks directly without it.
 
+### 2.1 Agent OS and app model (vision note for SP2+)
+
+The long-term product model is that `paddelino` becomes a local **agent operating system**. The always-running Bun process is the OS: it owns the agent runtime, channels, identity, routing, tools, memory, app registry, display state, and background work. Telegram, the local display, and later voice are input/output channels into that same OS.
+
+On top of this OS, the household can use **apps** or **skills**. An app is not initially a separate process. It is a registered capability inside the agent OS that can contribute one or more of:
+
+- A screen or set of screens for the local display.
+- Tools and background jobs.
+- Routing rules.
+- A preferred model, identity, or agent configuration.
+- Artifacts/cards shown on the dashboard or in an app page.
+- App-to-app delegation routines.
+
+Examples:
+
+- A `coding` app routes messages directly to a coding-capable agent identity and exposes coding artifacts on screen.
+- A `deep-think` app handles hard reasoning tasks and can delegate to `coding`, `news`, or any other app when it detects a better target.
+- A `giro-italia` app can fetch current race updates, display them on its own page, provide dashboard cards, and summarize updates through chat or voice.
+- A `news` app can aggregate updates from multiple source-specific apps.
+
+The desired interaction model is bidirectional:
+
+- The user can tap an app on the dashboard. Subsequent text or voice input from that screen is tagged with the active app and routed there first.
+- The user can ask the general assistant to open an app, for example "show me the latest Giro d'Italia updates". The agent OS may switch the display to the app, fetch/update data, and respond through chat, screen, or voice.
+- Any app can call or delegate to any other app. A specialized app is a routing target, not an isolation boundary.
+- The main dashboard can combine app cards, recent artifacts, status, and the general chat panel.
+
+SP2 should build the **display/app shell substrate**: local HTTP+WSS, dashboard, app launcher, active-app routing context, display-side streaming, artifact rendering, and agent-controlled UI actions such as `open_app`, `show_dashboard`, `show_artifact`, and `set_status`.
+
+SP2 should **not** yet implement arbitrary agent-authored installable apps. The "create me a Giro d'Italia app" loop requires the SP5 self-extension system: skill registry, hot reload, policy-gated writes, versioning, and known-good rollback. SP2 should, however, shape the app registry and screen model so SP5 can later add self-created apps without replacing the display architecture.
+
 ## 3. Goals and non-goals (SP1)
 
 ### Goals

@@ -357,7 +357,8 @@ export type AuditKind =
   | "tool_result"
   | "error"
   | "agent_end"
-  | "restart";
+  | "restart"
+  | "stub_sent";
 
 export interface AuditFn {
   (kind: AuditKind, userId: string, details: Record<string, unknown>): Promise<void>;
@@ -575,6 +576,21 @@ describe("persistence", () => {
     expect(existsSync(join(userDir, "default.json"))).toBe(true);
     expect(existsSync(join(userDir, "default.json.tmp"))).toBe(false);
   });
+
+  test("archive renames default.json to default.json.archived-<ts>", async () => {
+    const p = createPersistence(home, "0.1.0", "pi-test");
+    await p.save("user-a", { systemPrompt: "x", messages: [] } as any);
+    await p.archive("user-a");
+    const userDir = join(home, "users", "user-a", "conversations");
+    expect(existsSync(join(userDir, "default.json"))).toBe(false);
+    const files = readdirSync(userDir);
+    expect(files.some(f => f.startsWith("default.json.archived-"))).toBe(true);
+  });
+
+  test("archive on a user with no saved conversation is a no-op (does not throw)", async () => {
+    const p = createPersistence(home, "0.1.0", "pi-test");
+    await p.archive("nobody");   // must not throw
+  });
 });
 ```
 
@@ -592,6 +608,7 @@ export interface PersistenceOptions {
 export interface Persistence {
   save(userId: string, context: unknown): Promise<void>;
   load(userId: string): Promise<unknown | null>;
+  archive(userId: string): Promise<void>;
 }
 
 interface Envelope {
@@ -647,6 +664,13 @@ export function createPersistence(
       }
       return envelope.context;
     },
+
+    async archive(userId) {
+      const path = filePath(userId);
+      if (!existsSync(path)) return;
+      const ts = new Date().toISOString().replace(/[:.]/g, "-");
+      renameSync(path, `${path}.archived-${ts}`);
+    },
   };
 }
 
@@ -663,13 +687,13 @@ function archive(path: string, kind: "corrupt" | "incompatible"): void {
 bun test tests/unit/persistence.test.ts
 ```
 
-Expected: PASS (5/5).
+Expected: PASS (7/7).
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add src/agent/persistence.ts tests/unit/persistence.test.ts
-git commit -m "Add persistence with atomic write and corrupt/incompatible archival"
+git commit -m "Add persistence with atomic write, corrupt/incompatible/archive support"
 ```
 
 ---
@@ -1443,7 +1467,7 @@ git commit -m "Add Router with zero-rules default and first-match-wins ordering"
 
 ---
 
-## Phase G — Agent factory and manager (T20–T22)
+## Phase G — Agent factory and manager (T20–T21)
 
 ### T20: `src/agent/factory.ts` — createAgent
 
@@ -1527,7 +1551,7 @@ import { describe, test, expect, beforeEach } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registerFauxProvider, getModel } from "@earendil-works/pi-ai";
+import { registerFauxProvider, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { AgentManager } from "../../src/agent/manager";
 import { createPersistence } from "../../src/agent/persistence";
 import { createIdentity } from "../../src/agent/identity";
@@ -1539,7 +1563,10 @@ describe("AgentManager", () => {
 
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), "paddelino-mgr-"));
-    registerFauxProvider({ provider: "faux", id: "test" });
+    // pi-ai faux provider: registerFauxProvider returns a registration object
+    // with setResponses/getModel; it does NOT accept a `respond` callback.
+    const reg = registerFauxProvider({ provider: "faux" });
+    reg.setResponses([fauxAssistantMessage("ok")]);
     const identity = createIdentity(home);
     identity.setPersona("desc", "system prompt");
     const persistence = createPersistence(home, "0.1.0", "pi-test");
@@ -1549,7 +1576,7 @@ describe("AgentManager", () => {
       identity,
       persistence,
       audit,
-      defaultModel: getModel("faux" as any, "test" as any),
+      defaultModel: reg.getModel(),
       defaultThinkingLevel: "off",
     });
   });
@@ -1670,34 +1697,9 @@ git commit -m "Add AgentManager with per-user caching, evictUser/All, agent_end 
 
 ---
 
-### T22: `src/agent/factory.ts` — Telegram-side helper getSavedSessionList
+### T22: (removed during plan review)
 
-We need a way to ask "does any persisted user exist?" without instantiating Agents. Skipping for SP1 — `AgentManager.has(userId)` is enough. **No code change.** Mark this task as done by leaving a comment in `manager.ts`:
-
-- [ ] **Step 1: Add comment to `src/agent/manager.ts`**
-
-Append:
-
-```ts
-// SP1 does not need a "list all persisted users" helper — Telegram message
-// arrival drives user discovery. If SP3 (memory) or SP5 (admin commands)
-// needs enumeration, add it to AgentManager then.
-```
-
-- [ ] **Step 2: Typecheck**
-
-```bash
-bun run typecheck
-```
-
-Expected: exit 0.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add src/agent/manager.ts
-git commit -m "Document SP1 scope: no persisted-user enumeration in AgentManager"
-```
+This was a no-op task that only added a comment. Removed; task numbering preserves T23+ for stable cross-references.
 
 ---
 
@@ -1715,6 +1717,12 @@ git commit -m "Document SP1 scope: no persisted-user enumeration in AgentManager
 export interface Channel {
   start(): Promise<void>;
   stop(): Promise<void>;
+  /**
+   * Best-effort out-of-band notification to a specific user.
+   * Used for unsolicited messages (persistence-save failure, long-run completion).
+   * Implementations should swallow errors — the caller has nowhere to escalate to.
+   */
+  notify(userId: string, text: string): Promise<void>;
 }
 ```
 
@@ -1722,7 +1730,7 @@ export interface Channel {
 
 ```bash
 git add src/channels/ChannelInterface.ts
-git commit -m "Add ChannelInterface.start/stop seam"
+git commit -m "Add ChannelInterface.start/stop/notify seam"
 ```
 
 ---
@@ -2486,9 +2494,8 @@ export function registerCommands(bot: any /* grammY Bot */, deps: CommandDeps) {
 
   bot.command("reset", async (ctx: Context) => {
     const id = allow(ctx); if (!id) return;
-    // Archive default.json by reading and writing-to a renamed path
-    // (delegated to persistence in a later refactor; for SP1 we just evict)
     deps.agents.evictUser(id);
+    await deps.persistence.archive(id);   // archive default.json → default.json.archived-<ts>
     await ctx.reply("Conversation cleared.");
   });
 
@@ -2773,16 +2780,22 @@ export function createTelegramChannel(deps: TelegramChannelDeps): Channel {
     await photoHandler(ctx);
   });
 
-  bot.on("message:voice", async (ctx) => { await ctx.reply(stubFor("voice")); await deps.audit("auth_denied", String(ctx.from?.id ?? "?"), { kind: "voice", stub: true }); });
-  bot.on("message:audio", async (ctx) => { await ctx.reply(stubFor("audio")); });
-  bot.on("message:document", async (ctx) => { await ctx.reply(stubFor("document")); });
-  bot.on("message:video", async (ctx) => { await ctx.reply(stubFor("video")); });
-  bot.on("message:video_note", async (ctx) => { await ctx.reply(stubFor("video")); });
+  const auditStub = (ctx: any, kind: string) => deps.audit("stub_sent", String(ctx.from?.id ?? "?"), { kind });
+  bot.on("message:voice",      async (ctx) => { await ctx.reply(stubFor("voice"));    await auditStub(ctx, "voice"); });
+  bot.on("message:audio",      async (ctx) => { await ctx.reply(stubFor("audio"));    await auditStub(ctx, "audio"); });
+  bot.on("message:document",   async (ctx) => { await ctx.reply(stubFor("document")); await auditStub(ctx, "document"); });
+  bot.on("message:video",      async (ctx) => { await ctx.reply(stubFor("video"));    await auditStub(ctx, "video"); });
+  bot.on("message:video_note", async (ctx) => { await ctx.reply(stubFor("video"));    await auditStub(ctx, "video_note"); });
 
   let handle: ReturnType<typeof run> | null = null;
   return {
     async start() { handle = run(bot); },
     async stop() { if (handle) await handle.stop(); },
+    async notify(userId, text) {
+      // Telegram: for private chats, chat_id == user_id. If no private chat exists yet,
+      // sendMessage will throw; swallow the error per the Channel.notify contract.
+      try { await bot.api.sendMessage(Number(userId), text); } catch { /* best-effort */ }
+    },
   };
 }
 ```
@@ -2807,6 +2820,9 @@ import { photoProcessor } from "./agent/inputs/processors/photo";
 import { Allowlist, RateLimiter } from "./channels/telegram/security";
 import { createTelegramChannel } from "./channels/telegram/bot";
 import { PADDELINO_VERSION } from "./shared/types";
+import piAgentPkg from "@earendil-works/pi-agent-core/package.json" with { type: "json" };
+
+const PI_AGENT_VERSION = piAgentPkg.version;
 
 async function main() {
   const config = loadConfig(process.env);
@@ -2832,7 +2848,15 @@ async function main() {
   await audit("restart", "system", { version: PADDELINO_VERSION });
 
   const identity = createIdentity(config.paths.home);
-  const persistence = createPersistence(config.paths.home, PADDELINO_VERSION, "unknown");
+  // piVersionMatch is set so that loading an envelope written by a different
+  // pi-agent-core version archives it as .incompatible-<ts> instead of being
+  // silently fed to a possibly-incompatible Agent.
+  const persistence = createPersistence(
+    config.paths.home,
+    PADDELINO_VERSION,
+    PI_AGENT_VERSION,
+    { piVersionMatch: PI_AGENT_VERSION },
+  );
 
   const defaultModel = getModel(config.providers.defaultProvider as any, config.providers.defaultModel as any);
 
@@ -2916,7 +2940,7 @@ import { describe, test, expect, beforeEach } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registerFauxProvider, getModel } from "@earendil-works/pi-ai";
+import { registerFauxProvider, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { createIdentity, bootstrapPersona } from "../../src/agent/identity";
 
 describe("bootstrapPersona", () => {
@@ -2924,16 +2948,13 @@ describe("bootstrapPersona", () => {
   beforeEach(() => { home = mkdtempSync(join(tmpdir(), "paddelino-boot-")); });
 
   test("calls the LLM with meta-prompt template and writes result to identity dir", async () => {
-    registerFauxProvider({
-      provider: "faux",
-      id: "test",
-      respond: (req: any) => "POLISHED SYSTEM PROMPT",
-    });
+    const reg = registerFauxProvider({ provider: "faux" });
+    reg.setResponses([fauxAssistantMessage("POLISHED SYSTEM PROMPT")]);
     const id = createIdentity(home);
     const result = await bootstrapPersona({
       identity: id,
       userInput: "friendly cook helper, brief",
-      model: getModel("faux" as any, "test" as any),
+      model: reg.getModel(),
     });
     expect(result).toBe("POLISHED SYSTEM PROMPT");
     expect(id.hasPersona()).toBe(true);
@@ -3001,7 +3022,7 @@ export async function bootstrapPersona(args: BootstrapArgs): Promise<string> {
 bun test tests/unit/identity-bootstrap.test.ts
 ```
 
-Expected: PASS. If pi's `registerFauxProvider` API differs from this sketch (e.g., requires a different shape for `respond`), adjust to match the real signature — confirmed during spec phase that the function exists.
+Expected: PASS. The faux-provider API is `registerFauxProvider({ provider, models?, ... }) → { getModel, setResponses, appendResponses, ... }`. Replies are scripted via `setResponses` / `appendResponses` (passing `AssistantMessage` objects built with `fauxAssistantMessage(text)`), not via a callback.
 
 - [ ] **Step 4: Commit**
 
@@ -3078,42 +3099,52 @@ git commit -m "Wire persona bootstrap dialog and /persona regenerate into entryp
 
 ---
 
-### T36: Persistence-error handling — surface to user
+### T36: Persistence-error handling — surface to user via Channel.notify
 
 **Files:**
 - Modify: `src/agent/manager.ts`
+- Modify: `src/index.ts`
 
-The current `agent_end` listener swallows save errors into the audit log. Per §8, we also want a user-facing reply. Since the manager doesn't have a reply channel, the cleanest path is to expose a `onSaveError` callback.
+Per spec §8, a persistence-save failure should both audit-log and send a user-facing reply: `"Couldn't save conversation state. Your next message may repeat some context — I'll retry the save then."` `AgentManager` doesn't own a reply channel — but the `Channel` interface now exposes `notify(userId, text)` (T23), so we wire it as a `setOnSaveError` callback set after channel construction.
 
-- [ ] **Step 1: Add `onSaveError` to `AgentManagerOptions` and call it**
+- [ ] **Step 1: Add a settable `onSaveError` to `AgentManager`**
+
+In `src/agent/manager.ts`, add the field, the setter, and the call site:
 
 ```ts
-// in AgentManagerOptions
-onSaveError?: (userId: string, err: unknown) => Promise<void>;
+// inside class AgentManager
+private onSaveErrorHook?: (userId: string, err: unknown) => Promise<void>;
 
-// in agent.subscribe callback, replace the catch:
-} catch (err) {
-  await this.opts.audit("error", userId, { phase: "persistence.save", err: String(err) });
-  if (this.opts.onSaveError) await this.opts.onSaveError(userId, err);
+setOnSaveError(fn: (userId: string, err: unknown) => Promise<void>): void {
+  this.onSaveErrorHook = fn;
 }
 ```
 
-Wire it in `src/index.ts`:
+Replace the existing `agent_end` subscribe's catch block (currently `await this.opts.audit("error", ...)`) with:
 
 ```ts
-const agents = new AgentManager({
-  // ...
-  onSaveError: async (userId, _err) => {
-    // Send a one-shot Telegram message via the bot api. We need a handle to the api;
-    // expose a global reference, or move this wiring to after channel construction.
-    // For SP1: log to audit and skip the user message (the next `agent_end` retries).
-  },
+} catch (err) {
+  await this.opts.audit("error", userId, { phase: "persistence.save", err: String(err) });
+  if (this.onSaveErrorHook) {
+    try { await this.onSaveErrorHook(userId, err); } catch { /* best-effort */ }
+  }
+}
+```
+
+- [ ] **Step 2: Wire it in `src/index.ts`**
+
+After `const channel = createTelegramChannel({...});` and before `await channel.start();`, add:
+
+```ts
+agents.setOnSaveError(async (userId) => {
+  await channel.notify(
+    userId,
+    "Couldn't save conversation state. Your next message may repeat some context — I'll retry the save then.",
+  );
 });
 ```
 
-Decision for SP1: log to audit only (as currently). User reply is best-effort and would need a richer Telegram API hook. Document this in a comment and skip the user reply path. Update §8's "Persistence error" row accordingly: **"audit-logged silently; retry on next `agent_end`. User-facing reply deferred."**
-
-- [ ] **Step 2: Typecheck**
+- [ ] **Step 3: Typecheck**
 
 ```bash
 bun run typecheck
@@ -3121,11 +3152,11 @@ bun run typecheck
 
 Expected: exit 0.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add src/agent/manager.ts src/index.ts
-git commit -m "Persistence-save errors audit-logged; user-facing reply deferred"
+git commit -m "Persistence-save errors notify user via Channel.notify (§8 contract)"
 ```
 
 ---
@@ -3292,7 +3323,7 @@ import { describe, test, expect, beforeEach } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registerFauxProvider, getModel } from "@earendil-works/pi-ai";
+import { registerFauxProvider, fauxAssistantMessage, type FauxProviderRegistration } from "@earendil-works/pi-ai";
 import { createIdentity } from "../../src/agent/identity";
 import { createPersistence } from "../../src/agent/persistence";
 import { createAudit } from "../../src/shared/audit";
@@ -3300,9 +3331,11 @@ import { AgentManager } from "../../src/agent/manager";
 
 describe("integration: text round-trip", () => {
   let home: string;
+  let reg: FauxProviderRegistration;
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), "paddelino-int-"));
-    registerFauxProvider({ provider: "faux", id: "test", respond: () => "Hello back." });
+    reg = registerFauxProvider({ provider: "faux" });
+    reg.setResponses([fauxAssistantMessage("Hello back.")]);
   });
 
   test("prompt → assistant message persisted", async () => {
@@ -3312,7 +3345,7 @@ describe("integration: text round-trip", () => {
     const audit = createAudit(join(home, "audit.log"));
     const agents = new AgentManager({
       home, identity, persistence, audit,
-      defaultModel: getModel("faux" as any, "test" as any),
+      defaultModel: reg.getModel(),
       defaultThinkingLevel: "off",
     });
 
@@ -3330,12 +3363,14 @@ describe("integration: text round-trip", () => {
   });
 
   test("restart preserves conversation", async () => {
+    // The second AgentManager run needs its own scripted reply.
+    reg.appendResponses([fauxAssistantMessage("second")]);
     const identity = createIdentity(home); identity.setPersona("d", "p");
     const persistence = createPersistence(home, "0.1.0", "pi-test");
     const audit = createAudit(join(home, "audit.log"));
     const mk = () => new AgentManager({
       home, identity, persistence, audit,
-      defaultModel: getModel("faux" as any, "test" as any),
+      defaultModel: reg.getModel(),
       defaultThinkingLevel: "off",
     });
 
@@ -3381,7 +3416,7 @@ import { describe, test, expect, beforeEach } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registerFauxProvider, getModel } from "@earendil-works/pi-ai";
+import { registerFauxProvider, fauxAssistantMessage, type FauxProviderRegistration } from "@earendil-works/pi-ai";
 import { createIdentity } from "../../src/agent/identity";
 import { createPersistence } from "../../src/agent/persistence";
 import { createAudit } from "../../src/shared/audit";
@@ -3389,12 +3424,15 @@ import { AgentManager } from "../../src/agent/manager";
 
 describe("integration: steer", () => {
   let home: string;
+  let reg: FauxProviderRegistration;
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), "paddelino-steer-"));
-    registerFauxProvider({
-      provider: "faux", id: "slow",
-      respond: async () => { await new Promise(r => setTimeout(r, 200)); return "ok"; },
-    });
+    // Slow streaming so the steered message arrives while the first turn is still running.
+    // `tokensPerSecond` low → emit deltas slowly.
+    reg = registerFauxProvider({ provider: "faux", tokensPerSecond: 5 });
+    // Two scripted replies: one per assistant turn (first prompt + the follow-up turn
+    // triggered by the steered message).
+    reg.setResponses([fauxAssistantMessage("ok one"), fauxAssistantMessage("ok two")]);
   });
 
   test("second message during streaming gets steered, not lost", async () => {
@@ -3403,16 +3441,16 @@ describe("integration: steer", () => {
     const audit = createAudit(join(home, "audit.log"));
     const agents = new AgentManager({
       home, identity, persistence, audit,
-      defaultModel: getModel("faux" as any, "slow" as any),
+      defaultModel: reg.getModel(),
       defaultThinkingLevel: "off",
     });
 
     const agent = await agents.getAgent("user-1");
     const first = agent.prompt({ role: "user", content: "first", timestamp: 1 });
-    // Schedule a steer before first completes
+    // Schedule a steer while the first turn is still streaming.
     setTimeout(() => agent.steer({ role: "user", content: "ALSO this", timestamp: 2 } as any), 50);
     await first;
-    await new Promise(r => setTimeout(r, 250));
+    await new Promise(r => setTimeout(r, 500));
 
     const userMsgs = agent.state.messages.filter((m: any) => m.role === "user");
     expect(userMsgs.some((m: any) => typeof m.content === "string" && m.content.includes("ALSO this"))).toBe(true);
@@ -3493,7 +3531,7 @@ Manual checklist (`docs/smoke-checklist.md`) is the final SP1 acceptance gate.
 
 | Spec section | Covered by |
 |---|---|
-| §3 Goals: pi-agent-core runtime end-to-end | T20–T22, T28–T29, T33 |
+| §3 Goals: pi-agent-core runtime end-to-end | T20, T21, T28, T29, T33 |
 | §3 Goals: multi-provider, provider-aware default | T32 |
 | §3 Goals: per-user conversation continuity | T08, T21, T40 |
 | §3 Goals: streaming with consolidated status | T26, T28, T29, T30 |
@@ -3509,9 +3547,11 @@ Manual checklist (`docs/smoke-checklist.md`) is the final SP1 acceptance gate.
 | §6 /model with did-you-mean | T31 |
 | §6 /persona dialog and inline forms | T31, T35 |
 | §7 Persistence atomic write + envelope | T08 |
-| §7 Schema mismatch → archive | T08 |
-| §7 Audit log | T06 |
+| §7 Schema mismatch → archive | T08 (archival path), T33 (real pi version + piVersionMatch wired) |
+| §7 `/reset` archives default.json | T08 (`archive()` method), T31 (handler calls it) |
+| §7 Audit log | T06 (incl. `stub_sent` kind for media-type stubs) |
 | §8 Error replies (no emojis) | T28, T29, T31 |
+| §8 Persistence error → user-facing reply | T23 (`Channel.notify`), T33 (Telegram impl), T36 (wiring) |
 | §8 Abort + steer semantics | T31 (/stop), T41 (steer) |
 | §9 Build / dist / configuration | T02, T03, T32, T37, T38 |
 | §10 Verbatim ports | T07 (lock), T24 (security), T25 (formatting), T26 (streaming pattern) |
@@ -3519,4 +3559,12 @@ Manual checklist (`docs/smoke-checklist.md`) is the final SP1 acceptance gate.
 
 **Open in plan:** none.
 
-**Deferred from §8 in T36:** persistence-save error → user-facing Telegram reply. Audit-logged only in SP1 (documented inline).
+**Plan-review fixes applied 2026-05-20:**
+- T06: added `stub_sent` to `AuditKind`.
+- T08: added `archive(userId)` method to `Persistence` (+ 2 tests).
+- T21, T34, T40, T41: rewrote `registerFauxProvider` calls to match the real API (`{ provider, models? }` returns a registration with `setResponses` / `appendResponses` / `getModel`; no `respond` callback).
+- T22: removed (was a no-op task).
+- T23: extended `Channel` interface with `notify(userId, text)` for unsolicited messages.
+- T31: `/reset` now calls `persistence.archive(id)` alongside `agents.evictUser(id)`.
+- T33: passes the real pi-agent-core version + `{ piVersionMatch }` to `createPersistence` so the schema-mismatch guard is live; stub handlers now audit as `stub_sent` (not `auth_denied`); `createTelegramChannel` implements `notify`.
+- T36: actually wires `Channel.notify` for the §8 user-facing reply instead of deferring it.
